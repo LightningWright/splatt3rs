@@ -1,0 +1,9 @@
+[package]
+name = "simulator"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.5.59", features = ["derive"] }
+gif = {version = "0.14.1", features = ["color_quant"]}
+image = { version = "0.25.9"}

@@ -1,0 +1,3 @@
+[workspace]
+members = ["algorithm", "simulator", "rp2040-impl"]
+resolver = "3"
