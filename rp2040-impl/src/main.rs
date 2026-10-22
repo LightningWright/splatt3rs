@@ -20,6 +20,8 @@ use usbd_human_interface_device::{
 pub mod interpreter;
 use interpreter::{InstrInterpreter, parse_instructions};
 
+mod instr_loader;
+
 mod switch_hid;
 use switch_hid::*;
 
@@ -49,12 +51,7 @@ fn main() -> ! {
     let timer = hal::Timer::new(pac.TIMER, &mut pac.RESETS, &clocks);
 
     let sio = hal::Sio::new(pac.SIO);
-    let pins = hal::gpio::Pins::new(
-        pac.IO_BANK0,
-        pac.PADS_BANK0,
-        sio.gpio_bank0,
-        &mut pac.RESETS,
-    );
+    let pins = hal::gpio::Pins::new(pac.IO_BANK0, pac.PADS_BANK0, sio.gpio_bank0, &mut pac.RESETS);
 
     // Setup RP-PICO as a valid USB HID device
     let usb_bus = hal::usb::UsbBus::new(
@@ -67,19 +64,16 @@ fn main() -> ! {
 
     let usb_bus_alloc = UsbBusAllocator::new(usb_bus);
 
-    let gamepad_if =
-        InterfaceBuilder::<InBytes8, OutBytes8, Reports64>::new(SWITCH_REPORT_DESCRIPTOR)
-            .unwrap()
-            .in_endpoint(1.millis())
-            .unwrap()
-            .with_out_endpoint(1.millis())
-            .unwrap()
-            .boot_device(InterfaceProtocol::None)
-            .build();
+    let gamepad_if = InterfaceBuilder::<InBytes8, OutBytes8, Reports64>::new(SWITCH_REPORT_DESCRIPTOR)
+        .unwrap()
+        .in_endpoint(1.millis())
+        .unwrap()
+        .with_out_endpoint(1.millis())
+        .unwrap()
+        .boot_device(InterfaceProtocol::None)
+        .build();
 
-    let mut gamepad = UsbHidClassBuilder::new()
-        .add_device(gamepad_if)
-        .build(&usb_bus_alloc);
+    let mut gamepad = UsbHidClassBuilder::new().add_device(gamepad_if).build(&usb_bus_alloc);
 
     let mut usb_dev = UsbDeviceBuilder::new(&usb_bus_alloc, UsbVidPid(0x0F0D, 0x0092))
         .device_class(0) // Use class information in the Interface Descriptors
@@ -104,9 +98,14 @@ fn main() -> ! {
     // Use the on-board led for signaling button presses.
     let mut led_pin = pins.gpio25.into_push_pull_output();
 
-    // Load instructions file. It uses RLE compression
-    let instrs_rle = include_bytes!("../../instrs.rle");
-    let instrs = parse_instructions(instrs_rle).unwrap();
+    // Load the instructions from the `.instrs` flash section.
+    let instrs_rle = match instr_loader::payload() {
+        Ok(rle) => rle,
+        Err(e) => core::panic!("no valid instructions in flash ({:?}), run tools/embed_instrs.py", e),
+    };
+    let Some(instrs) = parse_instructions(instrs_rle) else {
+        core::panic!("instructions in flash do not decode");
+    };
     let mut interpreter = InstrInterpreter::new(&instrs);
 
     // Struct that holds the report the controller sends to the Nintendo Switch
