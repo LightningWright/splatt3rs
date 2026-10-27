@@ -1,9 +1,7 @@
 use defmt::info;
 use heapless::Vec;
 
-use crate::switch_hid::{
-    SWITCH_JOYSTICK_MID, SWITCH_JOYSTICK_MIN, SwitchButtons, SwitchHat, SwitchReport,
-};
+use crate::switch_hid::{SWITCH_JOYSTICK_MID, SWITCH_JOYSTICK_MIN, SwitchButtons, SwitchHat, SwitchReport};
 
 pub struct InstrInterpreter<'a> {
     stm: InterpreterStm,
@@ -17,7 +15,6 @@ enum InterpreterStm {
     CursorMove,
     ClearScreen,
     ExecuteInstr,
-    ExecuteExtraPaint,
 }
 
 #[repr(u8)]
@@ -150,21 +147,7 @@ impl<'a> InstrInterpreter<'a> {
                     let instr = self.instrs[self.offs];
                     self.offs += 1;
 
-                    let (r, paint) = decode_op(&instr);
-
-                    if paint {
-                        self.stm = InterpreterStm::ExecuteExtraPaint;
-                    }
-                    report = Some(r);
-                    break;
-                }
-
-                InterpreterStm::ExecuteExtraPaint => {
-                    self.stm = InterpreterStm::ExecuteInstr;
-                    report = Some(SwitchReport {
-                        buttons: SwitchButtons::MaskA as u16,
-                        ..SwitchReport::new()
-                    });
+                    report = Some(decode_op(&instr));
                     break;
                 }
             }
@@ -174,9 +157,7 @@ impl<'a> InstrInterpreter<'a> {
     }
 }
 
-fn decode_op(instr: &Op) -> (SwitchReport, bool) {
-    let mut extra_paint = false;
-
+fn decode_op(instr: &Op) -> SwitchReport {
     let mut report = SwitchReport {
         buttons: 0,
         hat: 0,
@@ -197,22 +178,22 @@ fn decode_op(instr: &Op) -> (SwitchReport, bool) {
             SwitchHat::Nothing
         }
         Op::XpD => {
-            extra_paint = true;
+            report.buttons = SwitchButtons::MaskA as u16;
             SwitchHat::Right
         }
         Op::XmD => {
-            extra_paint = true;
+            report.buttons = SwitchButtons::MaskA as u16;
             SwitchHat::Left
         }
         Op::YpD => {
-            extra_paint = true;
+            report.buttons = SwitchButtons::MaskA as u16;
             SwitchHat::Down
         }
         Op::YmD => {
-            extra_paint = true;
+            report.buttons = SwitchButtons::MaskA as u16;
             SwitchHat::Up
         }
     } as u8;
 
-    (report, extra_paint)
+    report
 }
