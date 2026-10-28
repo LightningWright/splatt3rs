@@ -1,4 +1,4 @@
-use std::{collections::HashSet, fs::File, hash::Hash, io::Write};
+use std::{collections::HashSet, fs::File, hash::Hash, io::Write, num::NonZero};
 
 use clap::Parser;
 
@@ -27,9 +27,14 @@ struct Args {
 
 fn main() {
     let args = Args::parse();
+
+    let workers = std::thread::available_parallelism()
+        .unwrap_or(NonZero::new(16usize).unwrap())
+        .get();
+
     let settings = AlgorithmSettings {
-        retries: if args.fast { 16 } else { 128 },
-        workers: 16,
+        retries: if args.fast { 128 } else { 8192 },
+        workers,
     };
 
     let img = image::open(args.input).expect("failed to load image");

@@ -1,112 +1,134 @@
+//! Grid Algorithm
+//!
+//! Generates a grid of fixed size square blocks and visits them in a serpentine order (left to right on one block row,
+//! right to left on the next).
+//! Inside each block the pixels are scanned in a serpentine too, choosing the best of 8 orientations (rows or columns,
+//! each with a flipped outer and/or inner direction) for the current cursor position.
+//!
+//! Several block sizes are tried in parallel and the best result wins.
+//!
+//! Blocks keep the cursor local, so it beats a plain line sweep on sparse
+//! images, but it has no notion of the actual shape of the pixels.
+
+use std::{collections::HashSet, iter};
+
 use rayon::prelude::*;
-use std::{
-    collections::HashSet,
-    sync::{Arc, Mutex},
-};
 
 use crate::{
     Op, Point,
-    algorithms::{AlgorithmSettings, H, W},
+    algorithms::{
+        AlgorithmSettings,
+        tsp_core::{Bounds, build_ops, manhattan},
+    },
 };
 
-pub fn alg(pixels: HashSet<Point>, _: AlgorithmSettings) -> (Vec<Op>, f64) {
-    let best_ratio = Arc::new(Mutex::new(f64::INFINITY));
-    let best_instrs = Arc::new(Mutex::new(Vec::new()));
+/// Block side lengths that are tried.
+const BLOCK_SIZES: [i32; 11] = [2, 3, 4, 5, 6, 8, 10, 16, 20, 40, 120];
 
-    let block_sizes = [2, 4, 5, 8, 10, 20, 40, 120];
-
-    block_sizes.into_par_iter().for_each(|block_sz| {
-        let mut path = Vec::new();
-        let mut current = Point(0, 0);
-
-        // Rows of blocks
-        let block_rows = (0..H).step_by(block_sz as usize).collect::<Vec<_>>();
-
-        for (row_idx, by) in block_rows.iter().enumerate() {
-            // Determine horizontal block order for serpentine
-            let mut block_cols = (0..W).step_by(block_sz as usize).collect::<Vec<_>>();
-            if row_idx % 2 == 1 {
-                block_cols.reverse();
-            }
-
-            for &bx in &block_cols {
-                // Check if the 8x8 block has any pixels
-                let mut has_pixels = false;
-                'check_block: for y in *by..(*by + block_sz).min(H) {
-                    for x in bx..(bx + block_sz).min(W) {
-                        if pixels.contains(&Point(x, y)) {
-                            has_pixels = true;
-                            break 'check_block;
-                        }
-                    }
-                }
-                if !has_pixels {
-                    continue; // skip empty block
-                }
-
-                // Serpentine scan inside the block
-                for (inner_row_idx, y) in (*by..(*by + block_sz).min(H)).enumerate() {
-                    let ltr = inner_row_idx % 2 == 0; // left→right on even row
-                    let xs: Box<dyn Iterator<Item = i32>> = if ltr {
-                        Box::new(bx..(bx + block_sz).min(W))
-                    } else {
-                        Box::new(((bx)..(bx + block_sz).min(W)).rev())
-                    };
-
-                    for x in xs {
-                        let p = Point(x, y);
-                        if pixels.contains(&p) && current != p {
-                            path.push(p);
-                            current = p;
-                        }
-                    }
-                }
-            }
-        }
-
-        let instrs = generate_instructions_optimized(&path);
-        let ratio = instrs.len() as f64 / pixels.len() as f64;
-
-        let mut locked_best_ratio = best_ratio.lock().unwrap();
-        if ratio < *locked_best_ratio {
-            *locked_best_ratio = ratio;
-            let mut locked_best_instrs = best_instrs.lock().unwrap();
-            *locked_best_instrs = instrs;
-            print!("\rNew ratio {} @ size {}", locked_best_ratio, block_sz);
-        }
-    });
-
-    let ratio = *best_ratio.lock().unwrap();
-    let instrs = best_instrs.lock().unwrap().clone();
-
-    println!("\r[GRID] R {ratio:.5} I {}               ", instrs.len());
-
-    (instrs, ratio)
+/// How a block is scanned: one of 8 serpentine orientations.
+#[derive(Clone, Copy)]
+struct Orientation {
+    /// Scan along rows (otherwise along columns).
+    by_rows: bool,
+    /// Start the first line in the opposite direction.
+    flip_inner: bool,
+    /// Visit the lines of the block in reverse order.
+    flip_outer: bool,
 }
 
-fn generate_instructions_optimized(path: &[Point]) -> Vec<Op> {
-    let mut instrs = Vec::with_capacity(path.len() * 2);
-    let mut pos = Point(0, 0);
-
-    for &p in path {
-        let mut dx = p.0 - pos.0;
-        let mut dy = p.1 - pos.1;
-
-        while dx != 0 {
-            let ddx = dx.signum();
-            instrs.push(if ddx > 0 { Op::Xp } else { Op::Xm });
-            dx -= ddx;
-        }
-
-        while dy != 0 {
-            let ddy = dy.signum();
-            instrs.push(if ddy > 0 { Op::Yp } else { Op::Ym });
-            dy -= ddy;
-        }
-
-        instrs.push(Op::D);
-        pos = p;
+impl Orientation {
+    /// All 8 combinations.
+    fn all() -> impl Iterator<Item = Self> {
+        (0..8u8).map(|bits| Orientation {
+            by_rows: bits & 1 != 0,
+            flip_outer: bits & 2 != 0,
+            flip_inner: bits & 4 != 0,
+        })
     }
+}
 
-    instrs
+/// Tries every block size in parallel and returns the instructions of the shortest result
+pub fn alg(pixels: HashSet<Point>, _: AlgorithmSettings) -> Vec<Op> {
+    let Some(bounds) = Bounds::of(pixels.iter().copied()) else {
+        return Vec::new();
+    };
+
+    BLOCK_SIZES
+        .into_par_iter()
+        .map(|size| build_ops(&pixels, &scan(&pixels, bounds, size)))
+        .min_by_key(|ops| ops.len())
+        .expect("at least one block size is tried")
+}
+
+/// Scan blocks to generate an optimal visiting order
+fn scan(pixels: &HashSet<Point>, bounds: Bounds, size: i32) -> Vec<Point> {
+    let columns = (bounds.width() + size - 1) / size;
+    let mut order = Vec::with_capacity(pixels.len());
+    let mut cursor = Point(0, 0);
+
+    for (row, y0) in bounds.ys().step_by(size as usize).enumerate() {
+        for column in 0..columns {
+            // Odd block rows run right to left.
+            let column = if row % 2 == 1 { columns - 1 - column } else { column };
+            let x0 = bounds.x0 + column * size;
+            let block = Bounds {
+                x0,
+                y0,
+                x1: (x0 + size - 1).min(bounds.x1),
+                y1: (y0 + size - 1).min(bounds.y1),
+            };
+
+            // Compare path traversals to select the shortest one
+            let best = Orientation::all()
+                .map(|orientation| block_path(pixels, block, orientation))
+                .filter(|path| !path.is_empty())
+                .min_by_key(|path| travel(cursor, path));
+
+            if let Some(path) = best {
+                cursor = path[path.len() - 1];
+                order.extend(path);
+            }
+        }
+    }
+    order
+}
+
+/// Distance travelled by walking from `from` to the first point of `path` and then along it.
+fn travel(from: Point, path: &[Point]) -> i32 {
+    iter::once(&from)
+        .chain(path)
+        .zip(path)
+        .map(|(&a, &b)| manhattan(a, b))
+        .sum()
+}
+
+/// Maps position `k` in `0..len` to its position when the range is walked backwards `flip == true`,
+fn mirrored(k: i32, len: i32, flip: bool) -> i32 {
+    if flip { len - 1 - k } else { k }
+}
+
+/// Returns the pixels inside `block` in serpentine order for the given orientation
+fn block_path(pixels: &HashSet<Point>, block: Bounds, o: Orientation) -> Vec<Point> {
+    let (lines, line_len) = if o.by_rows {
+        (block.height(), block.width())
+    } else {
+        (block.width(), block.height())
+    };
+
+    (0..lines)
+        .flat_map(|k| {
+            let line = mirrored(k, lines, o.flip_outer);
+            // Every other line is walked backwards; `flip_inner` picks which parity.
+            let backwards = (k % 2 == 1) != o.flip_inner;
+            (0..line_len).map(move |j| {
+                let along = mirrored(j, line_len, backwards);
+                if o.by_rows {
+                    Point(block.x0 + along, block.y0 + line)
+                } else {
+                    Point(block.x0 + line, block.y0 + along)
+                }
+            })
+        })
+        .filter(|p| pixels.contains(p))
+        .collect()
 }
