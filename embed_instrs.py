@@ -15,7 +15,7 @@ Section layout (all little endian), which rp2040-impl/src/instr_store.rs reads b
     4       4     payload length in bytes
     8       4     CRC-32 (zlib/IEEE) of the payload
     12      4     number of operations the payload decodes to
-    16      ..    payload: the contents of instrs.rle
+    16      ..    payload: the contents of instrs.rle (b"RLE" + 1 byte run length bits, then the tokens)
     ...           0xFF padding up to the end of the section (erased flash)
 """
 
@@ -30,6 +30,11 @@ MAGIC = b"RLE1"
 HEADER = struct.Struct("<4sIII")
 MAX_OPS = 76800  # 2n for the 320x120 canvas; same as the firmware's Vec capacity
 MAX_OPCODE = 8  # Xp Xm Yp Ym D XpD XmD YpD YmD
+OPCODE_BITS = 4
+PADDING_OPCODE = 0xF
+MAX_RLE_BITS = 16  # the encoder tries run length fields of 1 to 16 bits
+RLE_MAGIC = b"RLE"
+HEADER_RLE = struct.Struct("<3sB")  # b"RLE" + bits of the run length field
 
 SHT_NOBITS = 8
 PT_LOAD = 1
@@ -42,15 +47,35 @@ def die(msg) -> NoReturn:
 def count_ops(payload):
     """Decode the RLE stream exactly as the firmware does and return the op count.
 
-    Tokens are 10 bits, LSB first: 4 bit opcode, 6 bit (run length - 1). Leftover bits
-    shorter than a token are padding."""
+    The payload starts with a 4 byte header: b"RLE" and one byte with the number of bits of
+    the run length field. The tokens follow, LSB first, bit packed with no alignment:
 
-    ntokens = len(payload) * 8 // 10
-    value = int.from_bytes(payload, "little")
+        4 bit opcode, (run length bits) bit (run length - 1)
+
+    so a token is `4 + run length bits` bits long. The unused bits of the last byte are ones,
+    which read as opcode 15 and end the stream (with short tokens they can hold a whole token)."""
+
+    if len(payload) < HEADER_RLE.size or payload[:3] != RLE_MAGIC:
+        die(f"instruction file does not start with {RLE_MAGIC.decode()!r}")
+
+    rle_bits = payload[3]
+    if rle_bits > MAX_RLE_BITS:
+        die(f"run length of {rle_bits} bits is outside 1..={MAX_RLE_BITS}")
+
+    token_bits = OPCODE_BITS + rle_bits
+    body = payload[HEADER_RLE.size :]
+    body_bits = len(body) * 8
+    ntokens = body_bits // token_bits
+    value = int.from_bytes(body, "little")
+    token_mask = (1 << token_bits) - 1
+    run_mask = (1 << rle_bits) - 1
+
     ops = 0
     for i in range(ntokens):
-        token = (value >> (10 * i)) & 0x3FF
-        opcode, run = token & 0xF, (token >> 4) + 1
+        token = (value >> (token_bits * i)) & token_mask
+        opcode, run = token & 0xF, ((token >> OPCODE_BITS) & run_mask) + 1
+        if opcode == PADDING_OPCODE:
+            break  # the encoder fills the unused bits of the last byte with ones
         if opcode > MAX_OPCODE:
             die(f"token {i}: invalid opcode {opcode}")
         ops += run

@@ -45,8 +45,12 @@ fn main() {
     let instrs = algorithms::run_algorithms(pixels, settings);
 
     let mut file = File::create(args.output).unwrap();
-    let encoded_instrs = rle::rle_encode(&instrs);
+    // RLE encode the instruction list using an optimal distribution of the opcode (fixed 4 bits) and length (1-8 bits)
+    let (encoded_instrs, rle_len) = rle::rle_encode_optimal(&instrs, 4, 8);
 
+    let header = [b'R', b'L', b'E', rle_len as u8];
+
+    file.write_all(&header).unwrap();
     file.write_all(&encoded_instrs).unwrap();
     println!("Saved instructions file");
 }

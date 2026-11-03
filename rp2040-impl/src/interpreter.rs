@@ -1,4 +1,4 @@
-use defmt::info;
+use defmt::*;
 use heapless::Vec;
 
 use crate::switch_hid::{SWITCH_JOYSTICK_MID, SWITCH_JOYSTICK_MIN, SwitchButtons, SwitchHat, SwitchReport};
@@ -80,9 +80,22 @@ pub fn parse_instructions(data: &[u8]) -> Option<Vec<Op, 76800>> {
 
     let mut instrs: Vec<Op, 76800> = Vec::new();
 
-    while idx < data.len() || bits >= 10 {
+    // Read header
+    for val in *b"RLE" {
+        let h = pull(8, &mut acc, &mut bits, &mut idx)? as u8;
+
+        if val != h as u8 {
+            core::panic!("Invalid intruction file header");
+        }
+    }
+    let rle_len_bits = pull(8, &mut acc, &mut bits, &mut idx)? as u32;
+
+    while idx < data.len() || bits >= (4 + rle_len_bits) {
         let op = pull(4, &mut acc, &mut bits, &mut idx)? as u8;
-        let run_len = pull(6, &mut acc, &mut bits, &mut idx)? as usize + 1;
+        if op == 0b1111 {
+            break; // padding of the last byte
+        }
+        let run_len = pull(rle_len_bits, &mut acc, &mut bits, &mut idx)? as usize + 1;
 
         let op: Op = op.try_into().unwrap();
 

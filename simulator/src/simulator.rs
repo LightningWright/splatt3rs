@@ -1,13 +1,20 @@
 //! Simulate an instruction file as a picture or an animated GIF.
 //!
 //! # Instruction file
-//! A bit-packed stream of run-length-coded words, each 10 bits, least significant bit first:
+//! A bit-packed stream of run-length-coded dynamic words, least significant bit first.
+//! A header "RLEX" precedes the bit-packed stream, where X is the amount of bits of the RLE code length:
 //!
 //! ```
+//! 8 bits              'R'
+//! 8 bits              'L'
+//! 8 bits              'E'
+//! 8 bits              RLE LENGTH in bits
+//! ( N tokens
 //! 4 bits  opcode      0..=3 move right/left/down/up
 //!                     4     print
 //!                     5..=8 move right/left/down/up, then print
-//! 6 bits  run length  repeat count minus one
+//! X bits  run length  repeat count minus one.
+//! )
 //! ```
 //!
 //! # Simulation
@@ -44,8 +51,6 @@ const FRAME_DELAY_CS: u16 = 100 / FPS;
 
 /// Bits of the opcode field of a token.
 const RLE_OPCODE_BITS: u32 = 4;
-/// Bits of the run-length field of a token.
-const RLE_LEN_BITS: u32 = 6;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -123,6 +128,7 @@ struct BitReader<'a> {
     buffer: u64,
     /// Number of valid bits in `buffer`.
     buffered: u32,
+    pub token_size: u32,
 }
 
 impl<'a> BitReader<'a> {
@@ -131,12 +137,13 @@ impl<'a> BitReader<'a> {
             bytes: data.iter().copied(),
             buffer: 0,
             buffered: 0,
+            token_size: 0,
         }
     }
 
     /// Whether fewer bits remain than one full instruction word
     fn at_end(&self) -> bool {
-        self.bytes.len() == 0 && self.buffered < RLE_OPCODE_BITS + RLE_LEN_BITS
+        self.bytes.len() == 0 && self.buffered < self.token_size
     }
 
     /// Reads the next `nbits` bits as a number.
@@ -176,9 +183,25 @@ pub fn parse_instructions(path: &str) -> Result<Vec<Instr>, String> {
     let mut reader = BitReader::new(&data);
     let mut instrs = Vec::new();
 
+    // Read header
+    for val in *b"RLE" {
+        let h = reader.read(8)?;
+
+        if val != h as u8 {
+            return Err("Invalid intruction file header".to_owned());
+        }
+    }
+
+    // Get amount of bits for the RLE_LENGTH_BITS
+    let rle_len_bits = reader.read(8)? as u32;
+    reader.token_size = RLE_OPCODE_BITS + rle_len_bits;
+
     while !reader.at_end() {
         let opcode = reader.read(RLE_OPCODE_BITS)?;
-        let run_len = reader.read(RLE_LEN_BITS)? + 1;
+        if opcode == 0b1111 {
+            break; // padding of the last byte
+        }
+        let run_len = reader.read(rle_len_bits)? + 1;
         instrs.extend(iter::repeat_n(expand(opcode)?, run_len).flatten());
     }
     Ok(instrs)
