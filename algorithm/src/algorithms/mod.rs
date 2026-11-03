@@ -30,17 +30,37 @@ pub fn run_algorithms(pixels: HashSet<Point>, settings: AlgorithmSettings) -> Ve
     for (name, a) in algorithms {
         let res = a(pixels.clone(), settings.clone());
 
+        let instrs = optimize_instr_list(&res);
         // The optimal strategy contains twice the moves/draws than pixels to print
-        let opt_instr_ratio = (1. + res.len() as f64) / (2 * pixels.len()) as f64;
+        let opt_instr_ratio = instrs.len() as f64 / pixels.len() as f64;
 
         println!("[{name}] R {opt_instr_ratio:.05} I {}", res.len());
 
         if opt_instr_ratio < best_alg.2 {
-            best_alg = (name, res, opt_instr_ratio);
+            best_alg = (name, instrs, opt_instr_ratio);
         }
     }
 
     println!("Chosen algorithm: {}", best_alg.0);
     println!("Ratio: {:.05}", best_alg.2);
     best_alg.1
+}
+
+fn optimize_instr_list(instrs: &[Op]) -> Vec<Op> {
+    let mut out = Vec::with_capacity(instrs.len());
+    let mut i = 0;
+
+    while i < instrs.len() {
+        let cur = instrs[i];
+
+        if !cur.prints() && i + 1 < instrs.len() && instrs[i + 1].eq(&Op::D) {
+            out.push(cur.pack());
+            i += 2;
+        } else {
+            out.push(cur);
+            i += 1;
+        }
+    }
+
+    out
 }

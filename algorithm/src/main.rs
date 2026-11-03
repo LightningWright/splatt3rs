@@ -43,32 +43,12 @@ fn main() {
     println!("Pixels to print {}", pixels.len());
 
     let instrs = algorithms::run_algorithms(pixels, settings);
-    let instrs = optimize_instr_list(&instrs);
 
     let mut file = File::create(args.output).unwrap();
     let encoded_instrs = rle::rle_encode(&instrs);
 
     file.write_all(&encoded_instrs).unwrap();
     println!("Saved instructions file");
-}
-
-fn optimize_instr_list(instrs: &[Op]) -> Vec<Op> {
-    let mut out = Vec::with_capacity(instrs.len());
-    let mut i = 0;
-
-    while i < instrs.len() {
-        let cur = instrs[i];
-
-        if !cur.prints() && i + 1 < instrs.len() && instrs[i + 1].eq(&Op::D) {
-            out.push(cur.pack());
-            i += 2;
-        } else {
-            out.push(cur);
-            i += 1;
-        }
-    }
-
-    out
 }
 
 fn load_binary(img: &image::DynamicImage) -> HashSet<Point> {
