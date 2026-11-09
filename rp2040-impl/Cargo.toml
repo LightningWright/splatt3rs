@@ -2,7 +2,8 @@
 edition = "2024"
 name = "rp2040-impl"
 version = "1.0.0"
-license = "MIT OR Apache-2.0"
+#license = "MIT OR Apache-2.0" Applies to the template only.
+license = "GPL-3.0-only"
 
 [dependencies]
 cortex-m = "0.7.9"

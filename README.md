@@ -114,3 +114,8 @@ Or drag and drop the UF2 file into the microcontroller after executing:
 ```sh
 elf2uf2-rs rp2040-impl.elf rp2040-impl.uf2
 ```
+## License
+
+This project is licensed under the GNU General Public License version 3. See the [LICENSE](LICENSE) file.
+
+Copyright (C) 2026 Víctor Prieto Laso
